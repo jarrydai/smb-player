@@ -54,9 +54,11 @@ debug 包名带 `.debug` 后缀，可与正式版共存，方便对比调试。
 
 ## 下载
 
-前往 [Releases](../../releases) 下载最新的 `网络播放器-vX.Y.Z-release.apk` 直接安装。
+最新正式版：[**net-player-v1.4.2-release.apk**](../../releases/latest)
 
-> 打包时同时生成了 R8 混淆映射 `mapping-vX.Y.Z.txt`，用于还原崩溃堆栈，也放在对应 Release 里。
+或到 [Releases](../../releases) 页选择其他版本，下载 `.apk` 直接安装即可（Android 8.0 及以上）。
+
+> 每个 Release 里还有 `mapping-vX.Y.Z.txt`，那是 R8 混淆映射，用于还原崩溃堆栈，日常安装不需要下载。
 
 ## 说明
 
