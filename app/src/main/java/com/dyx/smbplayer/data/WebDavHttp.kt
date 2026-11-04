@@ -84,7 +84,9 @@ internal object WebDavHttp {
             headers.forEach { (k, v) -> sb.append(k).append(": ").append(v).append("\r\n") }
             if (body != null) {
                 sb.append("Content-Length: ").append(body.size).append("\r\n")
-            } else if (method == "PROPFIND") {
+            } else if (method != "GET" && method != "HEAD") {
+                // WebDAV 写方法（COPY/MOVE/DELETE/MKCOL/PROPFIND）即使没有请求体，
+                // 部分服务端也要求显式 Content-Length: 0，否则回 411 Length Required
                 sb.append("Content-Length: 0\r\n")
             }
             sb.append("\r\n")

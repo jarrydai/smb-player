@@ -1,7 +1,9 @@
 package com.dyx.smbplayer.ui.browser
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,11 +25,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Dns
-import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.DoneAll
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FolderOpen
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.Icon
@@ -38,6 +43,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -51,9 +57,11 @@ import com.dyx.smbplayer.ui.common.IconTile
 import com.dyx.smbplayer.ui.common.LoadingState
 import com.dyx.smbplayer.ui.common.formatSize
 import com.dyx.smbplayer.ui.common.headerBrush
+import com.dyx.smbplayer.viewmodel.BrowserViewModel
 
 /**
  * 目录浏览页：当前路径 + 文件夹/视频列表。
+ * 长按任意条目进入多选，可对共享文件执行复制 / 移动 / 删除 / 重命名 / 新建文件夹。
  */
 @Composable
 fun DirListScreen(
@@ -62,6 +70,8 @@ fun DirListScreen(
     entries: List<RemoteEntry>,
     loading: Boolean,
     error: String?,
+    ops: BrowserViewModel.OpsUiState,
+    actions: FileOpsActions,
     onBack: () -> Unit,
     onOpenDir: (String) -> Unit,
     onOpenEntry: (RemoteEntry) -> Unit,
@@ -72,59 +82,79 @@ fun DirListScreen(
         DirHeader(
             server = server,
             path = path,
+            ops = ops,
+            actions = actions,
             onBack = onBack,
             onExitToList = onExitToList,
         )
 
-        when {
-            loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                LoadingState("正在读取目录…")
-            }
+        Box(Modifier.weight(1f)) {
+            when {
+                loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    LoadingState("正在读取目录…")
+                }
 
-            error != null -> ErrorState(
-                title = "无法打开这个目录",
-                message = error,
-                onRetry = onRetry,
-            )
-
-            entries.isEmpty() -> EmptyState(
-                icon = Icons.Rounded.FolderOpen,
-                title = "这个文件夹是空的",
-                message = "没有找到视频、图片或文本文件。",
-            )
-
-            else -> {
-                val folderCount = entries.count { it.isDir }
-                val videoCount = entries.count { !it.isDir && it.kind == FileKind.VIDEO }
-                val imageCount = entries.count { !it.isDir && it.kind == FileKind.IMAGE }
-                val textCount = entries.count { !it.isDir && it.kind == FileKind.TEXT }
-                Text(
-                    buildString {
-                        val parts = mutableListOf<String>()
-                        if (folderCount > 0) parts.add("$folderCount 个文件夹")
-                        if (videoCount > 0) parts.add("$videoCount 个视频")
-                        if (imageCount > 0) parts.add("$imageCount 张图片")
-                        if (textCount > 0) parts.add("$textCount 个文本")
-                        append(parts.ifEmpty { listOf("空目录") }.joinToString(" · "))
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 22.dp, top = 14.dp),
+                error != null -> ErrorState(
+                    title = "无法打开这个目录",
+                    message = error,
+                    onRetry = onRetry,
                 )
-                LazyColumn(
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 28.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    items(entries, key = { it.url }) { entry ->
-                        EntryCard(
-                            entry = entry,
-                            onClick = {
-                                if (entry.isDir) onOpenDir(entry.url) else onOpenEntry(entry)
-                            },
-                        )
+
+                entries.isEmpty() -> EmptyState(
+                    icon = Icons.Rounded.FolderOpen,
+                    title = "这个文件夹是空的",
+                    message = "没有找到视频、图片或文本文件。",
+                )
+
+                else -> Column(Modifier.fillMaxSize()) {
+                    val folderCount = entries.count { it.isDir }
+                    val videoCount = entries.count { !it.isDir && it.kind == FileKind.VIDEO }
+                    val imageCount = entries.count { !it.isDir && it.kind == FileKind.IMAGE }
+                    val textCount = entries.count { !it.isDir && it.kind == FileKind.TEXT }
+                    Text(
+                        buildString {
+                            val parts = mutableListOf<String>()
+                            if (folderCount > 0) parts.add("$folderCount 个文件夹")
+                            if (videoCount > 0) parts.add("$videoCount 个视频")
+                            if (imageCount > 0) parts.add("$imageCount 张图片")
+                            if (textCount > 0) parts.add("$textCount 个文本")
+                            append(parts.ifEmpty { listOf("空目录") }.joinToString(" · "))
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 22.dp, top = 14.dp),
+                    )
+                    LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 28.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        items(entries, key = { it.url }) { entry ->
+                            EntryCard(
+                                entry = entry,
+                                selecting = ops.selecting,
+                                selected = entry.url in ops.selection,
+                                onClick = {
+                                    if (ops.selecting) actions.toggle(entry.url)
+                                    else if (entry.isDir) onOpenDir(entry.url) else onOpenEntry(entry)
+                                },
+                                onLongClick = {
+                                    if (ops.selecting) actions.toggle(entry.url)
+                                    else actions.startSelection(entry.url)
+                                },
+                            )
+                        }
                     }
                 }
             }
+        }
+
+        if (ops.selecting) {
+            FileOpsBar(
+                count = ops.selection.size,
+                enabled = ops.busy == null,
+                actions = actions,
+            )
         }
     }
 }
@@ -133,6 +163,8 @@ fun DirListScreen(
 private fun DirHeader(
     server: RemoteServer,
     path: String,
+    ops: BrowserViewModel.OpsUiState,
+    actions: FileOpsActions,
     onBack: () -> Unit,
     onExitToList: () -> Unit,
 ) {
@@ -146,44 +178,99 @@ private fun DirHeader(
             Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 6.dp, bottom = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onBack) {
-                Icon(
-                    Icons.AutoMirrored.Rounded.ArrowBack,
-                    contentDescription = "上一级",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                )
-            }
-            Column(Modifier.weight(1f)) {
-                Text(
-                    server.name,
-                    style = MaterialTheme.typography.titleLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    prettyPath(server, path),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Surface(
-                onClick = onExitToList,
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
-                modifier = Modifier.size(40.dp),
-            ) {
-                Box(contentAlignment = Alignment.Center) {
+            if (ops.selecting) {
+                IconButton(onClick = actions.clearSelection) {
                     Icon(
-                        Icons.Rounded.Dns,
-                        contentDescription = "服务器列表",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(19.dp),
+                        Icons.Rounded.Close,
+                        contentDescription = "退出多选",
+                        tint = MaterialTheme.colorScheme.onSurface,
                     )
                 }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "已选 ${ops.selection.size} 项",
+                        style = MaterialTheme.typography.titleLarge,
+                        maxLines = 1,
+                    )
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        prettyPath(server, path),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                IconButton(onClick = actions.selectAll) {
+                    Icon(
+                        Icons.Rounded.DoneAll,
+                        contentDescription = "全选",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            } else {
+                IconButton(onClick = onBack) {
+                    Icon(
+                        Icons.AutoMirrored.Rounded.ArrowBack,
+                        contentDescription = "上一级",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        server.name,
+                        style = MaterialTheme.typography.titleLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        prettyPath(server, path),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                HeaderRoundAction(
+                    icon = Icons.Rounded.Add,
+                    description = "新建文件夹",
+                    onClick = actions.createFolder,
+                )
+                HeaderRoundAction(
+                    icon = Icons.Rounded.DoneAll,
+                    description = "多选",
+                    onClick = { actions.startSelection(null) },
+                )
+                HeaderRoundAction(
+                    icon = Icons.Rounded.Dns,
+                    description = "服务器列表",
+                    onClick = onExitToList,
+                )
             }
+        }
+    }
+}
+
+@Composable
+private fun HeaderRoundAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    description: String,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+        modifier = Modifier.size(38.dp),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                icon,
+                contentDescription = description,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(19.dp),
+            )
         }
     }
 }
@@ -192,14 +279,32 @@ private fun DirHeader(
 private fun prettyPath(server: RemoteServer, path: String): String =
     RemoteFiles.prettyPath(server, path)
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun EntryCard(entry: RemoteEntry, onClick: () -> Unit) {
+private fun EntryCard(
+    entry: RemoteEntry,
+    selecting: Boolean,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    val shape = RoundedCornerShape(16.dp)
     Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
-        modifier = Modifier.fillMaxWidth(),
+        shape = shape,
+        color = if (selected) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
+        border = BorderStroke(
+            1.dp,
+            if (selected) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
     ) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 11.dp),
@@ -250,8 +355,9 @@ private fun EntryCard(entry: RemoteEntry, onClick: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            if (entry.kind == FileKind.VIDEO) {
-                Surface(
+            when {
+                selecting -> SelectionCheck(selected)
+                entry.kind == FileKind.VIDEO -> Surface(
                     shape = CircleShape,
                     color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
                     modifier = Modifier
@@ -267,8 +373,7 @@ private fun EntryCard(entry: RemoteEntry, onClick: () -> Unit) {
                         )
                     }
                 }
-            } else {
-                Icon(
+                else -> Icon(
                     Icons.AutoMirrored.Rounded.KeyboardArrowRight,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),

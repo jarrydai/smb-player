@@ -1,5 +1,6 @@
 package com.dyx.smbplayer.ui.browser
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
@@ -11,6 +12,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -19,19 +21,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.dyx.smbplayer.data.FileOpMode
 import com.dyx.smbplayer.data.model.RemoteEntry
 import com.dyx.smbplayer.data.model.RemoteProtocol
 import com.dyx.smbplayer.data.model.RemoteServer
 import com.dyx.smbplayer.viewmodel.BrowserViewModel
 
 /**
- * 浏览层容器：在「服务器列表」和「目录浏览」之间切换，并管理新增/编辑/设置弹层。
+ * 浏览层容器：在「服务器列表」和「目录浏览」之间切换，
+ * 并承载共享文件的批量操作（多选 / 复制 / 移动 / 删除 / 重命名 / 新建文件夹）。
  */
 @Composable
 fun BrowserScreen(onOpenEntry: (RemoteEntry, RemoteServer) -> Unit) {
     val vm: BrowserViewModel = viewModel()
     val servers by vm.servers.collectAsState()
     val browse by vm.browse.collectAsState()
+    val ops by vm.ops.collectAsState()
     val discovered by vm.discovered.collectAsState()
     val discovering by vm.discovering.collectAsState()
     val seekRangeSeconds by vm.seekRangeSeconds.collectAsState()
@@ -39,13 +44,41 @@ fun BrowserScreen(onOpenEntry: (RemoteEntry, RemoteServer) -> Unit) {
 
     var showAddDialog by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showRename by remember { mutableStateOf(false) }
+    var showCreateFolder by remember { mutableStateOf(false) }
     var editingServer by remember { mutableStateOf<RemoteServer?>(null) }
     var prefillHost by remember { mutableStateOf<String?>(null) }
     var prefillProtocol by remember { mutableStateOf(RemoteProtocol.SMB) }
 
-    // 系统返回键：目录内逐级返回，共享根目录再按返回回到服务器列表
-    BackHandler(enabled = browse.server != null) {
-        vm.goUp()
+    val actions = FileOpsActions(
+        startSelection = { url -> vm.startSelection(url) },
+        toggle = { url -> vm.toggleSelection(url) },
+        selectAll = { vm.selectAll() },
+        clearSelection = { vm.clearSelection() },
+        copy = { vm.beginTransfer(FileOpMode.COPY) },
+        move = { vm.beginTransfer(FileOpMode.MOVE) },
+        delete = { showDeleteConfirm = true },
+        rename = { showRename = true },
+        createFolder = { showCreateFolder = true },
+    )
+
+    // 返回键优先级：目标选择器 > 退出多选 > 目录逐级返回；操作执行中不响应
+    BackHandler(enabled = browse.server != null || ops.selecting || ops.picker != null) {
+        if (ops.busy != null) return@BackHandler
+        when {
+            ops.picker != null -> vm.dismissPicker()
+            ops.selecting -> vm.clearSelection()
+            browse.server != null -> vm.goUp()
+        }
+    }
+
+    // 成功提示用 Toast，失败明细走结果对话框
+    LaunchedEffect(ops.toast) {
+        ops.toast?.let {
+            Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
+            vm.consumeToast()
+        }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -97,6 +130,8 @@ fun BrowserScreen(onOpenEntry: (RemoteEntry, RemoteServer) -> Unit) {
                     entries = browse.entries,
                     loading = browse.loading,
                     error = browse.error,
+                    ops = ops,
+                    actions = actions,
                     onBack = { vm.goUp() },
                     onOpenDir = { vm.openDir(it) },
                     onOpenEntry = { entry -> onOpenEntry(entry, server) },
@@ -104,6 +139,15 @@ fun BrowserScreen(onOpenEntry: (RemoteEntry, RemoteServer) -> Unit) {
                     onRetry = { vm.retry() },
                 )
             }
+        }
+
+        // 操作执行中盖一层遮罩，避免重复点击
+        if (ops.busy != null) {
+            BusyOverlay(
+                label = ops.busy!!,
+                progress = ops.progress,
+                current = ops.currentName,
+            )
         }
     }
 
@@ -133,6 +177,72 @@ fun BrowserScreen(onOpenEntry: (RemoteEntry, RemoteServer) -> Unit) {
                 editingServer = null
                 prefillHost = null
             },
+        )
+    }
+
+    if (showDeleteConfirm) {
+        val names = vm.selectedEntries().map { it.displayName }
+        DeleteConfirmDialog(
+            count = names.size,
+            names = names,
+            onConfirm = {
+                showDeleteConfirm = false
+                vm.deleteSelected()
+            },
+            onDismiss = { showDeleteConfirm = false },
+        )
+    }
+
+    if (showRename) {
+        NameInputDialog(
+            title = "重命名",
+            label = "新名称",
+            initial = vm.selectedEntries().firstOrNull()?.displayName.orEmpty(),
+            confirmLabel = "确定",
+            onConfirm = {
+                showRename = false
+                vm.renameSelected(it)
+            },
+            onDismiss = { showRename = false },
+        )
+    }
+
+    if (showCreateFolder) {
+        NameInputDialog(
+            title = "新建文件夹",
+            label = "文件夹名称",
+            initial = "",
+            confirmLabel = "创建",
+            onConfirm = {
+                showCreateFolder = false
+                vm.createFolder(it)
+            },
+            onDismiss = { showCreateFolder = false },
+        )
+    }
+
+    ops.picker?.let { picker ->
+        browse.server?.let { server ->
+            DestinationPickerDialog(
+                server = server,
+                picker = picker,
+                itemCount = vm.selectedEntries().size,
+                busy = ops.busy != null,
+                onOpenDir = { vm.pickerOpenDir(it) },
+                onGoUp = { vm.pickerGoUp() },
+                onToRoot = { vm.pickerToRoot() },
+                onCreateFolder = { showCreateFolder = true },
+                onConfirm = { vm.confirmTransfer() },
+                onDismiss = { vm.dismissPicker() },
+            )
+        }
+    }
+
+    ops.result?.let { result ->
+        OpResultDialog(
+            result = result,
+            label = ops.resultLabel,
+            onDismiss = { vm.ackResult() },
         )
     }
 }

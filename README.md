@@ -17,6 +17,14 @@
 - 按扩展名区分视频 / 图片 / 文本，各自用对应查看器打开
 - 支持格式：视频 `mp4 mkv avi mov webm flv ts m4v wmv rmvb mpg mpeg 3gp m2ts vob ogv asf divx f4v m1v m2v ogm tp trp`；图片 `jpg png gif webp bmp heic heif avif`；文本 `txt log md csv json xml ini cfg conf yml yaml properties srt ass html bat sh`
 
+**共享文件管理**
+- 长按条目（或点顶栏多选图标）进入多选，可全选、逐个勾选
+- 批量复制、移动、删除；单选时还可重命名；随时可新建文件夹
+- 复制/移动前会弹出目标文件夹选择器，可逐级进入、返回上级、回到根目录，也能在目标位置新建文件夹
+- 删除前二次确认，逐项执行并汇总失败原因，不会因一项失败中断整批
+- 同名自动改成 `xxx (1)` 这类名字，`Overwrite: F` 保证不覆盖已有文件；禁止把文件夹放进它自己里面
+- SMB 走 jcifs 的原子 rename / 递归流复制，WebDAV 走 `COPY` / `MOVE` / `DELETE` / `MKCOL`
+
 **播放**
 - Media3 / ExoPlayer 内核，硬件解码
 - 自定义 `DataSource`，拖动进度条即定位，不用先缓冲整个文件
@@ -54,9 +62,7 @@ debug 包名带 `.debug` 后缀，可与正式版共存，方便对比调试。
 
 ## 下载
 
-最新正式版：[**net-player-v1.4.2-release.apk**](../../releases/latest)
-
-或到 [Releases](../../releases) 页选择其他版本，下载 `.apk` 直接安装即可（Android 8.0 及以上）。
+最新正式版见 [Releases](../../releases/latest) 页，下载 `net-player-*.apk` 直接安装即可（Android 8.0 及以上）。
 
 > 每个 Release 里还有 `mapping-vX.Y.Z.txt`，那是 R8 混淆映射，用于还原崩溃堆栈，日常安装不需要下载。
 

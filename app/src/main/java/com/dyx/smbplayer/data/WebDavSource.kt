@@ -281,4 +281,81 @@ object WebDavSource {
         }
         throw (lastShort ?: IOException("读取失败"))
     }
+
+    // ---------------- 写操作（复制 / 移动 / 删除 / 新建文件夹） ----------------
+
+    /** 2xx 才算成功；把 WebDAV 特有的错误码翻译成能看懂的原因 */
+    private fun ensureOk(method: String, resp: DavResponse) {
+        if (resp.code in 200..299) return
+        val hint = when (resp.code) {
+            403 -> "（没有写入权限，或服务器禁止该操作）"
+            405 -> "（服务器不支持 $method，可能未开启 WebDAV 写入）"
+            409 -> "（目标的上级目录不存在）"
+            412 -> "（目标已存在，已跳过以避免覆盖）"
+            423 -> "（文件被锁定）"
+            507 -> "（服务器存储空间不足）"
+            else -> ""
+        }
+        throw IOException(resp.errorMessage() + hint)
+    }
+
+    /** 删除文件或整个目录（Depth: infinity 让服务端自己递归） */
+    @Throws(IOException::class)
+    fun delete(server: RemoteServer, url: String) {
+        WebDavHttp.execute(server, "DELETE", url, mapOf("Depth" to "infinity")).use {
+            ensureOk("DELETE", it)
+        }
+    }
+
+    /** 复制到已编码好的绝对目标地址；Overwrite: F 保证不会覆盖同名文件 */
+    @Throws(IOException::class)
+    fun copy(server: RemoteServer, srcUrl: String, destUrl: String) {
+        transfer(server, "COPY", srcUrl, destUrl)
+    }
+
+    @Throws(IOException::class)
+    fun move(server: RemoteServer, srcUrl: String, destUrl: String) {
+        transfer(server, "MOVE", srcUrl, destUrl)
+    }
+
+    private fun transfer(server: RemoteServer, method: String, srcUrl: String, destUrl: String) {
+        WebDavHttp.execute(
+            server = server,
+            method = method,
+            url = srcUrl,
+            headers = mapOf(
+                "Destination" to destUrl,
+                "Overwrite" to "F",
+                "Depth" to "infinity",
+            ),
+            timeoutMs = 120_000, // 大目录的服务端复制可能较慢
+        ).use { ensureOk(method, it) }
+    }
+
+    /** 新建目录；MKCOL 要求请求路径以 / 结尾 */
+    @Throws(IOException::class)
+    fun mkdir(server: RemoteServer, dirUrl: String) {
+        WebDavHttp.execute(server, "MKCOL", dirUrl.trimEnd('/') + "/").use {
+            ensureOk("MKCOL", it)
+        }
+    }
+
+    /**
+     * 探测某个地址是否已存在（用于避免覆盖）。
+     * 无法判定时保守返回 true —— 宁可自动改名，也不能覆盖用户文件。
+     */
+    fun exists(server: RemoteServer, url: String): Boolean = runCatching {
+        WebDavHttp.execute(
+            server = server,
+            method = "PROPFIND",
+            url = url,
+            headers = mapOf("Depth" to "0", "Content-Type" to "application/xml; charset=utf-8"),
+            body = PROPFIND_BODY.toByteArray(Charsets.UTF_8),
+        ).use { resp ->
+            when (resp.code) {
+                404, 410 -> false
+                else -> true
+            }
+        }
+    }.getOrDefault(true)
 }

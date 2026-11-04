@@ -9,6 +9,8 @@ import jcifs.config.PropertyConfiguration
 import jcifs.context.BaseContext
 import jcifs.smb.NtlmPasswordAuthenticator
 import jcifs.smb.SmbFile
+import jcifs.smb.SmbFileInputStream
+import jcifs.smb.SmbFileOutputStream
 import jcifs.smb.SmbRandomAccessFile
 import java.io.IOException
 import java.util.LinkedHashMap
@@ -156,6 +158,98 @@ object SmbSource {
             throw IOException("读取不完整（${off}/${buf.size} 字节），共享可能不稳定")
         }
         return if (off == buf.size) buf else buf.copyOf(off)
+    }
+
+    // ---------------- 写操作（复制 / 移动 / 删除 / 新建文件夹） ----------------
+
+    private fun smbFile(server: RemoteServer, url: String): SmbFile =
+        SmbFile(url, contextFor(server))
+
+    /** 用「父目录 + 名字」构造目标，中文/空格的 URL 编码交给 jcifs 处理 */
+    private fun child(parent: SmbFile, name: String): SmbFile =
+        SmbFile(parent, name.trimEnd('/'))
+
+    /**
+     * 判断目标是否存在。
+     *
+     * 不直接用 `SmbFile.exists()`：部分 SMB 服务（含 impacket / 部分 NAS）对不存在路径的
+     * CREATE 探测会回一个无法解析的 SMB2_CLOSE 响应，jcifs 会抛异常，若一律当作「已存在」
+     * 会静默阻断所有写操作。列父目录是最稳的判断方式，且这条路径在浏览时已经跑通。
+     */
+    fun exists(server: RemoteServer, parentDir: String, name: String): Boolean {
+        val parent = smbFile(server, parentDir)
+        val children = runCatching { parent.listFiles() }.getOrNull()
+        if (children != null) {
+            val wanted = name.trimEnd('/')
+            return children.any { it.name.trimEnd('/') == wanted }
+        }
+        // 列不了目录时才退回逐个探测；此时异常只能是「探测失败」，如实抛给上层
+        return child(parent, name).exists()
+    }
+
+    @Throws(IOException::class)
+    fun delete(server: RemoteServer, url: String) {
+        deleteRecursive(smbFile(server, url))
+    }
+
+    /** jcifs 的 delete() 不会递归，先清空子项再删目录本身 */
+    private fun deleteRecursive(file: SmbFile) {
+        if (file.isDirectory) {
+            file.listFiles()?.forEach { sub ->
+                if (sub.name != "." && sub.name != "..") deleteRecursive(sub)
+            }
+        }
+        file.delete()
+    }
+
+    /** 新建目录，返回新目录地址（供目标选择器刷新） */
+    @Throws(IOException::class)
+    fun mkdir(server: RemoteServer, parentDir: String, name: String): String {
+        // 存在性由 FileOps 统一检查；这里不再 exists() 探测，避免不存在路径触发协议异常
+        val target = child(smbFile(server, parentDir), name)
+        runCatching { target.mkdir() }
+            .getOrElse { throw IOException("新建文件夹失败：${it.message}", it) }
+        return target.url.toString()
+    }
+
+    @Throws(IOException::class)
+    fun copy(server: RemoteServer, srcUrl: String, destDir: String, destName: String) {
+        copyRecursive(smbFile(server, srcUrl), child(smbFile(server, destDir), destName))
+    }
+
+    /** 目录逐层创建并复制子项，文件走流拷贝（256KB 缓冲） */
+    private fun copyRecursive(src: SmbFile, dest: SmbFile) {
+        if (src.isDirectory) {
+            // 目标已存在时 mkdirs() 会报错，忽略即可；不调用 exists() 以避开探测兼容问题
+            runCatching { dest.mkdirs() }
+            src.listFiles()?.forEach { sub ->
+                if (sub.name != "." && sub.name != "..") {
+                    copyRecursive(sub, child(dest, sub.name))
+                }
+            }
+        } else {
+            SmbFileInputStream(src).use { input ->
+                SmbFileOutputStream(dest, false).use { output ->
+                    input.copyTo(output, 256 * 1024)
+                }
+            }
+        }
+    }
+
+    @Throws(IOException::class)
+    fun move(server: RemoteServer, srcUrl: String, destDir: String, destName: String) {
+        val src = smbFile(server, srcUrl)
+        val dest = child(smbFile(server, destDir), destName)
+        // 同一共享内 rename 是服务端原子操作，几乎瞬时；跨共享或部分 NAS 不支持时
+        // 退化成「复制 + 删除」，代价是要走一遍网络流量
+        if (runCatching { src.renameTo(dest) }.isFailure) {
+            try {
+                copyRecursive(src, dest)
+            } catch (e: Exception) {
+                throw IOException("移动失败：${e.message}", e)
+            }
+            deleteRecursive(src)
+        }
     }
 
     // ---------------- 播放句柄缓存 ----------------
